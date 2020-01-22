@@ -34,8 +34,9 @@ def encrypt_message(K, message):
     """ Encrypt a message under a key K """
 
     plaintext = message.encode("utf8")
-    
-    ## YOUR CODE HERE
+    iv = urandom(len(K))
+    aes = Cipher("aes-128-gcm")
+    ciphertext, tag = aes.quick_gcm_enc(K, iv, plaintext)
 
     return (iv, ciphertext, tag)
 
@@ -44,7 +45,9 @@ def decrypt_message(K, iv, ciphertext, tag):
 
         In case the decryption fails, throw an exception.
     """
-    ## YOUR CODE HERE
+    aes = Cipher("aes-128-gcm")
+    # Throws exception on decryption failure
+    plain = aes.quick_gcm_dec(K, iv, ciphertext, tag)
 
     return plain.encode("utf8")
 
@@ -78,7 +81,8 @@ def is_point_on_curve(a, b, p, x, y):
     assert (isinstance(x, Bn) and isinstance(y, Bn)) \
            or (x == None and y == None)
 
-    if x == None and y == None:
+    #if x == None and y == None:
+    if x is None and y is None:
         return True
 
     lhs = (y * y) % p
@@ -99,9 +103,25 @@ def point_add(a, b, p, x0, y0, x1, y1):
 
     Return the point resulting from the addition. Raises an Exception if the points are equal.
     """
-
-    # ADD YOUR CODE BELOW
     xr, yr = None, None
+
+    if not all([x0, y0, x1, y1]):
+        # Either is origin; inf is "(0,0)"
+        xr = x0 or x1
+        yr = y0 or y1
+    elif (x0 == x1 and y0 == y1):
+        # Point doubling
+        #xr, yr = point_double(a, b, p, x0, y0)
+        # NOTE: asked to raise exact exception
+        raise Exception("EC Points must not be equal")
+    elif (y0 + y1) % p == Bn(0):
+        # Negation, checking y coord, return origin
+        pass
+    else:
+        inv = (x1 - x0).mod_inverse(p)
+        lam = ((y1 - y0) * inv) % p
+        xr = (lam**2 - x0 - x1) % p
+        yr = (lam * (x0 - xr) - y0) % p
     
     return (xr, yr)
 
@@ -117,8 +137,16 @@ def point_double(a, b, p, x, y):
     Returns the point representing the double of the input (x, y).
     """  
 
-    # ADD YOUR CODE BELOW
     xr, yr = None, None
+
+    if not all([x, y]):
+        # Is origin; inf is "(0,0)"
+        pass
+    else:
+        inv = (2 * y).mod_inverse(p)
+        lam = ((3 * (x ** 2) + a) * inv) % p
+        xr = (lam**2 - 2 * x) % p
+        yr = (lam * (x - xr) - y) % p
 
     return xr, yr
 
@@ -140,7 +168,10 @@ def point_scalar_multiplication_double_and_add(a, b, p, x, y, scalar):
     P = (x, y)
 
     for i in range(scalar.num_bits()):
-        pass ## ADD YOUR CODE HERE
+        if scalar.is_bit_set(i):
+            # unpacking Q and P as one list
+            Q = point_add(a, b, p, *Q+P)
+        P = point_double(a, b, p, *P)
 
     return Q
 
@@ -153,7 +184,7 @@ def point_scalar_multiplication_montgomerry_ladder(a, b, p, x, y, scalar):
         R0 = infinity
         R1 = P
         for i in num_bits(P)-1 to zero:
-            if di = 0:
+            if i = 0:
                 R1 = R0 + R1
                 R0 = 2R0
             else
@@ -166,7 +197,14 @@ def point_scalar_multiplication_montgomerry_ladder(a, b, p, x, y, scalar):
     R1 = (x, y)
 
     for i in reversed(range(0,scalar.num_bits())):
-        pass ## ADD YOUR CODE HERE
+        if not scalar.is_bit_set(i):
+            # unpacking R0 and R1 as one list
+            R1 = point_add(a, b, p, *(R0+R1))
+            R0 = point_double(a, b, p, *R0)
+        else:
+            # unpacking R0 and R1 as one list
+            R0 = point_add(a, b, p, *(R0+R1))
+            R1 = point_double(a, b, p, *R1)
 
     return R0
 
