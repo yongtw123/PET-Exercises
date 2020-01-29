@@ -331,3 +331,12 @@ def test_check_fail():
 @pytest.mark.task5
 def test_key_gen():
     G, priv, pub = dh_get_key()
+
+
+#####################################################
+# TASK 6 -- Time EC scalar multiplication
+
+@pytest.mark.task6
+def test_time_scalar_mul():
+    time_scalar_mul()
+

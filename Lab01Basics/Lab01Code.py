@@ -234,7 +234,7 @@ def ecdsa_sign(G, priv_sign, message):
     """ Sign the SHA256 digest of the message using ECDSA and return a signature """
     plaintext =  message.encode("utf8")
 
-    ## YOUR CODE HERE
+    sig = do_ecdsa_sign(G, priv_sign, sha256(plaintext).digest())
 
     return sig
 
@@ -242,7 +242,7 @@ def ecdsa_verify(G, pub_verify, message, sig):
     """ Verify the ECDSA signature on the message """
     plaintext =  message.encode("utf8")
 
-    ## YOUR CODE HERE
+    res = do_ecdsa_verify(G, pub_verify, sig, sha256(plaintext).digest())
 
     return res
 
@@ -271,16 +271,62 @@ def dh_encrypt(pub, message, aliceSig = None):
         - Optionally: sign the message with Alice's key.
     """
     
-    ## YOUR CODE HERE
-    pass
+    # pub is bob's pub key, alicesig is my private sig key,
+    # which shuold be different from enc/dec keypair
+    # for cryptographic sec reasons
+
+    # priv is an integer, pub is an ec point
+    alice_G, alice_priv, alice_pub = dh_get_key()
+
+    # shared secret = my priv x bob's pub point
+    shared_key = alice_priv * pub
+    # hash ec pt to derive key
+    shared_key = sha256(shared_key.export()).digest()
+
+    # aes_gcm encrypt
+    aes = Cipher("aes-256-gcm")
+    iv = urandom(len(shared_key))
+    ciphertext, tag = aes.quick_gcm_enc(shared_key, iv, message.encode("utf-8"))
+
+    # sign message (assume using common curve)
+    # hash ciphertext
+    sig = do_ecdsa_sign(EcGroup(), aliceSig, sha256(ciphertext).digest()) if aliceSig else None
+
+    # return alice_pub for dh_decrypt on bob side
+    # (because bob needs alice's pub to gen shared secret)
+    return (iv, ciphertext, tag, alice_pub, sig)
 
 def dh_decrypt(priv, ciphertext, aliceVer = None):
     """ Decrypt a received message encrypted using your public key, 
     of which the private key is provided. Optionally verify 
     the message came from Alice using her verification key."""
     
-    ## YOUR CODE HERE
-    pass
+    # ciphertext be (iv, ciphertext, tag, sender_pub, sig)
+    # bob decrypting: check sig using alice's pub ver key,
+    # then decrypt using shared key derived from priv (bob's private key)
+
+    # check input parameter format
+    if (not isinstance(ciphertext, tuple)) or (isinstance(ciphertext, tuple) and len(ciphertext) != 5):
+        raise Exception("Expecting tuple (iv, ciphertext, tag, sender public key, signature).")
+    iv, encmsg, tag, sender_pub, sig = ciphertext
+
+    # verify signature
+    if aliceVer:
+        if not sig:
+           raise Exception("Signature required before decyption.")
+        elif not do_ecdsa_verify(EcGroup(), aliceVer, sig, sha256(encmsg).digest()):
+           raise Exception("Signature verification failed.")
+    
+    # shared key = bob priv x alice's pub point
+    shared_key = priv * sender_pub
+    # hash
+    shared_key = sha256(shared_key.export()).digest()
+
+    # decrypt
+    aes = Cipher("aes-256-gcm")
+    plaintext = aes.quick_gcm_dec(shared_key, iv, encmsg, tag)
+
+    return plaintext.encode("utf-8")
 
 ## NOTE: populate those (or more) tests
 #  ensure they run using the "py.test filename" command.
@@ -288,13 +334,74 @@ def dh_decrypt(priv, ciphertext, aliceVer = None):
 #  $ py.test-2.7 --cov-report html --cov Lab01Code Lab01Code.py 
 
 def test_encrypt():
-    assert False
+    _, bob_priv, bob_pub = dh_get_key() # for enc/dec
+    _, alice_sig, alice_ver = dh_get_key() # for sig/ver
+    string = u"Tally ho!"
+
+    enc = dh_encrypt(bob_pub, string)
+    assert len(enc) == 5
+    assert enc[4] is None
+    assert len(enc[1]) == len(string)
+
+    enc = dh_encrypt(bob_pub, string, alice_sig)
+    assert len(enc) == 5
+    assert enc[4] is not None
+    assert len(enc[1]) == len(string)
 
 def test_decrypt():
-    assert False
+    _, bob_priv, bob_pub = dh_get_key() # for enc/dec
+    _, alice_sig, alice_ver = dh_get_key() # for sig/ver
+    string = u"You shall not pass!"
+
+    enc = dh_encrypt(bob_pub, string, alice_sig) # bob encrypts sth to alice
+    dec = dh_decrypt(bob_priv, enc, alice_ver)
+    assert dec == string
+
+    dec2 = dh_decrypt(bob_priv, enc) # allow decryption if signature verification is not requested
+    assert dec2 == string
 
 def test_fails():
-    assert False
+    from pytest import raises
+
+    _, bob_priv, bob_pub = dh_get_key() # for enc/dec
+    _, alice_sig, alice_ver = dh_get_key() # for sig/ver
+    string = u"The Doors of Durin, Lord of Moria. Speak, friend, and enter."
+
+    iv, encmsg, tag, sender_pub, sig = dh_encrypt(bob_pub, string, alice_sig)
+
+    # ciphertext not a tuple
+    with raises(Exception) as excinfo:
+        dh_decrypt(bob_priv, "aloha", alice_ver)
+    assert 'Expecting tuple (iv, ciphertext, tag, sender public key, signature).' in str(excinfo.value)
+
+    # ciphertext incomplete
+    with raises(Exception) as excinfo:
+        dh_decrypt(bob_priv, (iv, encmsg, tag), alice_ver)
+    assert 'Expecting tuple (iv, ciphertext, tag, sender public key, signature).' in str(excinfo.value)
+
+    # signature not supplied when needed
+    with raises(Exception) as excinfo:
+        dh_decrypt(bob_priv, (iv, encmsg, tag, sender_pub, None), alice_ver)
+    assert 'Signature required before decyption.' in str(excinfo.value)
+
+    # modified encrypted message
+    with raises(Exception) as excinfo:
+         dh_decrypt(bob_priv, (iv, urandom(len(encmsg)), tag, sender_pub, sig), alice_ver)
+    assert 'Signature verification failed.' in str(excinfo.value)
+
+    # wrong iv
+    with raises(Exception) as excinfo:
+         dh_decrypt(bob_priv, (urandom(len(iv)), encmsg, tag, sender_pub, sig), alice_ver)
+    assert 'decryption failed' in str(excinfo.value)
+
+    # wrong tag
+    with raises(Exception) as excinfo:
+         dh_decrypt(bob_priv, (iv, encmsg, urandom(len(tag)), sender_pub, sig), alice_ver)
+    assert 'decryption failed' in str(excinfo.value)
+
+    # NOTE: not going to test wrong shared secret since it is implied that both parties know 
+    #       each other's public key, and DH is carried out successfully
+    
 
 #####################################################
 # TASK 6 -- Time EC scalar multiplication
@@ -307,4 +414,30 @@ def test_fails():
 #           - Fix one implementation to not leak information.
 
 def time_scalar_mul():
-    pass
+    import time, pprint
+
+    G = EcGroup()
+    d = G.parameters()
+    a, b, p = d["a"], d["b"], d["p"]
+    g = G.generator()
+    x, y = g.get_affine()
+    scalars = G.order().hex()
+    results = []
+
+    for i in range(0, len(scalars), 3):
+        r = Bn.from_hex(scalars[:i+1])
+        start = time.clock()
+        point_scalar_multiplication_double_and_add(a, b, p, x, y, r)
+        elapsed = (time.clock() - start)
+        results.append((r, elapsed))
+    pp = pprint.PrettyPrinter(indent=2, width=160)
+    pp.pprint(results)
+
+    for i in range(0, len(scalars), 3):
+        r = Bn.from_hex(scalars[:i+1])
+        start = time.clock()
+        point_scalar_multiplication_montgomerry_ladder(a, b, p, x, y, r)
+        elapsed = (time.clock() - start)
+        results.append((r, elapsed))
+    pp = pprint.PrettyPrinter(indent=2, width=160)
+    pp.pprint(results)
