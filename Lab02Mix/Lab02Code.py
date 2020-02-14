@@ -280,7 +280,48 @@ def mix_client_n_hop(public_keys, address, message):
     private_key = G.order().random()
     client_public_key  = private_key * G.generator()
 
-    ## ADD CODE HERE
+    ## Get shared keys (top-down)
+    keyring = namedtuple("Keyring", ["hmac_key", "address_key", "message_key"])
+    shared_keys = []
+    accumulated_blinding_factor = Bn(1)
+    for public_key in public_keys:
+        shared_key = accumulated_blinding_factor * private_key * public_key
+        key_material = sha512(shared_key.export()).digest()
+
+        # Use different parts of the shared key for different operations
+        hmac_key = key_material[:16]
+        address_key = key_material[16:32]
+        message_key = key_material[32:48]
+        blinding_factor = Bn.from_binary(key_material[48:])
+        accumulated_blinding_factor = accumulated_blinding_factor * blinding_factor
+
+        # Store keyring
+        shared_keys.append(keyring(hmac_key, address_key, message_key))
+
+    ## Construct NHop message (bottom-up)
+    hmacs = []
+    address_cipher = address_plaintext
+    message_cipher = message_plaintext
+    for shared_key in reversed(shared_keys):
+        # Encrypt address and message; accumulate
+        iv = b"\x00"*16
+        address_cipher = aes_ctr_enc_dec(shared_key.address_key, iv, address_cipher)
+        message_cipher = aes_ctr_enc_dec(shared_key.message_key, iv, message_cipher)
+
+        # Encrypt other HMACs
+        for i, hmac in enumerate(hmacs):
+            # Ensure the IV is different for each hmac
+            iv = pack("H14s", i, b"\x00"*14)
+            hmacs[i] = aes_ctr_enc_dec(shared_key.hmac_key, iv, hmac)        
+
+        # Get HMAC 
+        h = Hmac(b"sha512", shared_key.hmac_key)
+        for hmac in hmacs:
+            h.update(hmac)
+        h.update(address_cipher)
+        h.update(message_cipher)
+        expected_mac = h.digest()[:20]
+        hmacs.insert(0, expected_mac)
 
     return NHopMixMessage(client_public_key, hmacs, address_cipher, message_cipher)
 
@@ -330,9 +371,12 @@ def analyze_trace(trace, target_number_of_friends, target=0):
     friends of the target.
     """
 
-    ## ADD CODE HERE
+    counter_of_target = Counter()
+    for rnd in trace:
+        if target in rnd[0]:
+            counter_of_target.update(rnd[1])
 
-    return []
+    return [e[0] for e in counter_of_target.most_common(target_number_of_friends)]
 
 ## TASK Q1 (Question 1): The mix packet format you worked on uses AES-CTR with an IV set to all zeros. 
 #                        Explain whether this is a security concern and justify your answer.
