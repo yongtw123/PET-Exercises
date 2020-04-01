@@ -90,7 +90,18 @@ def credential_EncryptUserSecret(params, pub, priv):
     #                     b = k * pub + v * g and 
     #                     pub = priv * g}
 
-    ## TODO
+    # NOTE: Wap and Wbp share a common witness w[0] for secret k
+    #       Wbp has a witness w[1] for secret v
+    #       Wbpub has a witness w[2] for secret priv
+    witnesses = [o.random() for _ in range(3)]
+    Wap = witnesses[0] * g 
+    Wbp = witnesses[0] * pub + witnesses[1] * g
+    Wpubp = witnesses[2] * g
+    c = to_challenge([g, pub, a, b, Wap, Wbp, Wpubp])
+
+    rk = witnesses[0] - c * k
+    rv = witnesses[1] - c * v
+    rpriv = witnesses[2] - c * priv
 
     # Return the fresh v, the encryption of v and the proof.
     proof = (c, rk, rv, rpriv)
@@ -138,16 +149,33 @@ def credential_Issuing(params, pub, ciphertext, issuer_params):
     # The ciphertext of the encrypted attribute v
     a, b = ciphertext
 
-    # 1) Create a "u" as u = b*g 
-    # 2) Create a X1b as X1b == b * X1 == (b * x1) * h
-    #     and x1b = (b * x1) mod o 
+    # 1) Create a "u" as u = beta*g 
+    # 2) Create a X1b as X1b == beta * X1 == (beta * x1) * h
+    #     and x1b = (beta * x1) mod o 
     
     # TODO 1 & 2
+    beta = o.random()
+    u = beta * g
+    X1b = beta * X1 # X1 is (x1 * h)
+    x1b = (beta * x1) % o # for the other representaton of X1b
 
     # 3) The encrypted MAC is u, and an encrypted u_prime defined as 
-    #    E( (b*x0) * g + (x1 * b * v) * g ) + E(0; r_prime)
+    #    E( (beta*x0) * g + (x1 * beta * v) * g ) + E(0; r_prime)
     
     # TODO 3
+    # NOTE: Aim to construct encryption of u' from ciphertext (a,b)
+    #       Why? Because only b has info about secret v
+    #       => utilize homomorphic property x1b * ciphertext
+    #       => (x1b * a    , x1b * b)
+    #       => (x1b * k * g, x1b * pub + x1b * v * g) 
+    #          Right-hand side is close to what we want!
+    #          Just add (beta * x0) * g or x0 * u!
+
+    r_prime = o.random() # for homomorphic encryption
+    # E(u'; k' = x1b*k) = (k'*g, k'*pub + u')
+    # NOTE Add E(0; r')
+    new_a = x1b * a + r_prime * g
+    new_b = x1b * b + x0 * u + r_prime * pub
 
     ciphertext = new_a, new_b
 
@@ -162,6 +190,25 @@ def credential_Issuing(params, pub, ciphertext, issuer_params):
     #       Cx0 = x0 * g + x0_bar * h }
 
     ## TODO proof
+    witnesses = [o.random() for _ in range(6)] # x1, beta, x1b, r', x0, x0_bar
+    W_X1 = witnesses[0] * h
+    W_X1bb = witnesses[1] * X1
+    W_X1bx = witnesses[2] * h
+    W_u = witnesses[1] * g
+    W_a = witnesses[3] * g + witnesses[2] * a
+    W_b = witnesses[3] * pub + witnesses[2] * b + witnesses[4] * u
+    W_Cx0 = witnesses[4] * g + witnesses[5] * h
+    c = to_challenge([g, h, pub, a, b, X1, X1b, new_a, new_b, Cx0,
+                      W_X1, W_X1bb, W_X1bx, W_u, W_a, W_b, W_Cx0])
+
+    rs = [
+        witnesses[0] - c * x1,
+        witnesses[1] - c * beta,
+        witnesses[2] - c * x1b,
+        witnesses[3] - c * r_prime,
+        witnesses[4] - c * x0,
+        witnesses[5] - c * x0_bar
+    ]
 
     proof = (c, rs, X1b) # Where rs are multiple responses
 
@@ -227,21 +274,36 @@ def credential_show(params, issuer_pub_params, u, u_prime, v):
     #    random alpha.
     
     # TODO 1
+    alpha = o.random()
+    u = alpha * u
+    u_prime = alpha * u_prime
 
     # 2) Implement the "Show" protocol (p.9) for a single attribute v.
     #    Cv is a commitment to v and Cup is C_{u'} in the paper. 
 
     # TODO 2
+    z1 = o.random()
+    r = o.random()
+    Cv = v * u + z1 * h
+    Cup = u_prime + r * g
 
     tag = (u, Cv, Cup)
 
     # Proof or knowledge of the statement
     #
-    # NIZK{(r, z1,v): 
+    # NIZK{(r, z1, v): 
     #           Cv = v *u + z1 * h and
     #           V  = r * (-g) + z1 * X1 }
 
     ## TODO proof
+    witnesses = [o.random() for _ in range(3)]
+    W1 = witnesses[2] * u + witnesses[1] * h
+    W2 = witnesses[0] * g + witnesses[1] * X1
+    c = to_challenge([g, h, Cx0, X1, Cv, Cup, W1, W2])
+
+    rr = witnesses[0] + c * r
+    rz1 = witnesses[1] - c * z1
+    rv = witnesses[2] - c * v
 
     proof = (c, rr, rz1, rv)
     return tag, proof
@@ -261,6 +323,10 @@ def credential_show_verify(params, issuer_params, tag, proof):
     (u, Cv, Cup) = tag
 
     ## TODO
+    V = x1 * Cv + x0 * u - Cup
+    c_prime = to_challenge([g, h, Cx0, X1, Cv, Cup,
+        c * Cv + rv * u + rz1 * h,
+        c * V + rr * g + rz1 * X1])
 
     return c == c_prime
 
@@ -285,7 +351,43 @@ def credential_show_pseudonym(params, issuer_pub_params, u, u_prime, v, service_
     pseudonym = v * N
 
     ## TODO (use code from above and modify as necessary!)
+    # 1) First blind the credential (u, u_prime)
+    #    using (alpha * u, alpha * u_prime) for a
+    #    random alpha.
+    
+    alpha = o.random()
+    u = alpha * u
+    u_prime = alpha * u_prime
 
+    # 2) Implement the "Show" protocol (p.9) for a single attribute v.
+    #    Cv is a commitment to v and Cup is C_{u'} in the paper. 
+
+    z1 = o.random()
+    r = o.random()
+    Cv = v * u + z1 * h
+    Cup = u_prime + r * g
+
+    tag = (u, Cv, Cup)
+
+    # Proof or knowledge of the statement
+    #
+    # NIZK{(r, z1, v): 
+    #           Cv = v *u + z1 * h and
+    #           V  = r * (-g) + z1 * X1
+    #           pseudonym = v * N }
+
+    ## TODO proof
+    witnesses = [o.random() for _ in range(3)]
+    W1 = witnesses[2] * u + witnesses[1] * h
+    W2 = witnesses[0] * g + witnesses[1] * X1
+    W3 = witnesses[2] * N
+    c = to_challenge([g, h, Cx0, X1, Cv, Cup, W1, W2, W3])
+
+    rr = witnesses[0] + c * r
+    rz1 = witnesses[1] - c * z1
+    rv = witnesses[2] - c * v
+
+    proof = (c, rr, rz1, rv)
     return pseudonym, tag, proof
 
 def credential_show_verify_pseudonym(params, issuer_params, pseudonym, tag, proof, service_name):
@@ -305,6 +407,15 @@ def credential_show_verify_pseudonym(params, issuer_params, pseudonym, tag, proo
     ## Verify the correct Show protocol and the correctness of the pseudonym
 
     # TODO (use code from above and modify as necessary!)
+    # Verify proof of correct credential showing
+    (c, rr, rz1, rv) = proof
+    (u, Cv, Cup) = tag
+
+    V = x1 * Cv + x0 * u - Cup
+    c_prime = to_challenge([g, h, Cx0, X1, Cv, Cup,
+        c * Cv + rv * u + rz1 * h,
+        c * V + rr * g + rz1 * X1,
+        c * pseudonym + rv * N ])
 
     return c == c_prime
 
